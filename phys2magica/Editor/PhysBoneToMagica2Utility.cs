@@ -329,7 +329,9 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 "maxAngle", "MaxAngle", "m_maxAngle");
             MapFloat(ref stats, serializeData, maxAngle,
                 "maxAngle", "MaxAngle", "m_maxAngle", "m_MaxAngle");
-            MapFloatByKeywords(ref stats, serializeData, maxAngle, "angle");
+            // Limit fallback angle keyword mapping to angle-limit style members only,
+            // so we don't accidentally overwrite unrelated angle-restoration stiffness fields.
+            MapFloatByKeywords(ref stats, serializeData, maxAngle, "angle", "limit");
             MapFloatByKeywords(ref stats, serializeData, limit, "limit");
 
             MapEnum(ref stats, serializeData, "Point", "collisionMode", "CollisionMode", "m_collisionMode");

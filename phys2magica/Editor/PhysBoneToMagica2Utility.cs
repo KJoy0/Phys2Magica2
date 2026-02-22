@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Reflection;
 using UnityEditor;
 using UnityEngine;
@@ -14,17 +15,7 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
             public int physBonesFound;
             public int magicaCreated;
             public int physBonesDeleted;
-            public int advancedMappingsApplied;
-            public int advancedMappingsSkipped;
         }
-
-        private struct MappingStats
-        {
-            public int applied;
-            public int skipped;
-        }
-
-        private const bool EnableVerboseMappingLogs = false;
 
         /// <summary>
         /// Standalone converter: VRC PhysBone -> MagicaCloth2 MagicaCloth (forced Bone Cloth).
@@ -109,9 +100,10 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                     );
 
                     // Map PhysBone -> Magica Bone Cloth parameters (includes curve weighting)
-                    var stats = MapPhysBoneToMagicaBoneCloth(physComp, serializeData);
-                    result.advancedMappingsApplied += stats.applied;
-                    result.advancedMappingsSkipped += stats.skipped;
+                    MapPhysBoneToMagicaBoneCloth(physComp, serializeData);
+
+                    // Transfer PhysBone collider references when compatible members exist
+                    MapPhysBoneColliders(physComp, serializeData);
                 }
 
                 result.magicaCreated++;
@@ -129,7 +121,7 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 }
             }
 
-            Debug.Log($"PhysBone→Magica2: Found {result.physBonesFound}, created {result.magicaCreated}, deleted {result.physBonesDeleted}, advanced mapped {result.advancedMappingsApplied}, advanced skipped {result.advancedMappingsSkipped}.");
+            Debug.Log($"PhysBone→Magica2: Found {result.physBonesFound}, created {result.magicaCreated}, deleted {result.physBonesDeleted}.");
             return result;
         }
 
@@ -155,10 +147,9 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
         // ======================================================
         // Mapping (focus: pull/spring/stiffness weighting)
         // ======================================================
-        private static MappingStats MapPhysBoneToMagicaBoneCloth(Component physBone, object serializeData)
+        private static void MapPhysBoneToMagicaBoneCloth(Component physBone, object serializeData)
         {
-            var stats = new MappingStats();
-            if (physBone == null || serializeData == null) return stats;
+            if (physBone == null || serializeData == null) return;
 
             // ---- PhysBone scalars (fallbacks) ----
             float pullScalar      = GetFloatMember(physBone, 0.5f, "pull", "Pull", "m_Pull");
@@ -171,33 +162,6 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
             float gravityFalloff = GetFloatMember(physBone, 0f, "gravityFalloff", "GravityFalloff", "m_GravityFalloff");
 
             float momentum  = GetFloatMember(physBone, 1f, "momentum", "Momentum", "m_Momentum");
-
-            // ---- Additional PhysBone advanced members ----
-            float radius = GetFloatMember(physBone, 0f,
-                "radius", "Radius", "m_Radius",
-                "hitRadius", "HitRadius", "m_HitRadius",
-                "colliderRadius", "ColliderRadius", "m_ColliderRadius");
-            float immobile = GetFloatMember(physBone, 0f,
-                "immobile", "Immobile", "m_Immobile",
-                "worldInertia", "WorldInertia", "m_WorldInertia",
-                "inertia", "Inertia", "m_Inertia");
-            float maxAngle = GetFloatMember(physBone, 0f,
-                "maxAngle", "MaxAngle", "m_MaxAngle",
-                "maxStretchAngle", "MaxStretchAngle", "m_MaxStretchAngle",
-                "angleLimit", "AngleLimit", "m_AngleLimit");
-            float limit = GetFloatMember(physBone, maxAngle,
-                "limit", "Limit", "m_Limit",
-                "limitValue", "LimitValue", "m_LimitValue");
-            float angleLimit = GetFloatMember(physBone, maxAngle,
-                "angleLimit", "AngleLimit", "m_AngleLimit",
-                "maxAngleX", "MaxAngleX", "m_MaxAngleX");
-
-            object collidersObj = GetMember<object>(physBone, null,
-                "colliders", "Colliders", "m_Colliders",
-                "colliderList", "ColliderList", "m_ColliderList",
-                "ignoreColliders", "IgnoreColliders", "m_IgnoreColliders");
-
-            int sourceColliderCount = CountEnumerable(collidersObj);
 
             // ---- PhysBone curves (the real "weights") ----
             var pullCurve      = GetCurveMember(physBone, "pullCurve", "PullCurve", "m_PullCurve");
@@ -221,25 +185,25 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 float root = pullCurve.Evaluate(0f);
                 float tip  = pullCurve.Evaluate(1f);
 
-                MapFloat(ref stats, serializeData, root,
+                SetFloatMemberBestEffort(serializeData, root,
                     "stiffnessRoot", "RootStiffness", "m_rootStiffness", "m_stiffnessRoot", "forceStiffnessRoot");
-                MapFloat(ref stats, serializeData, tip,
+                SetFloatMemberBestEffort(serializeData, tip,
                     "stiffnessTip", "TipStiffness", "m_tipStiffness", "m_stiffnessTip", "forceStiffnessTip");
 
                 // Also try generic names some versions use
-                MapFloat(ref stats, serializeData, root, "forceStiffnessRoot", "ForceStiffnessRoot");
-                MapFloat(ref stats, serializeData, tip,  "forceStiffnessTip",  "ForceStiffnessTip");
+                SetFloatMemberBestEffort(serializeData, root, "forceStiffnessRoot", "ForceStiffnessRoot");
+                SetFloatMemberBestEffort(serializeData, tip,  "forceStiffnessTip",  "ForceStiffnessTip");
             }
             else
             {
                 // Fallback scalar -> Force/Stiffness
-                MapFloat(ref stats, serializeData, pullScalar,
+                SetFloatMemberBestEffort(serializeData, pullScalar,
                     "stiffness", "Stiffness", "m_stiffness", "m_Stiffness",
                     "forceStiffness", "ForceStiffness", "m_forceStiffness");
             }
 
             // ---- Momentum -> Velocity Attenuation ----
-            MapFloat(ref stats, serializeData, momentum,
+            SetFloatMemberBestEffort(serializeData, momentum,
                 "velocityAttenuation", "VelocityAttenuation", "m_velocityAttenuation", "m_VelocityAttenuation");
 
             // ---- Spring curve/scalar -> Elasticity-like (best-effort) ----
@@ -249,14 +213,14 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 float root = springCurve.Evaluate(0f);
                 float tip  = springCurve.Evaluate(1f);
 
-                MapFloat(ref stats, serializeData, root,
+                SetFloatMemberBestEffort(serializeData, root,
                     "elasticityRoot", "RootElasticity", "m_rootElasticity", "m_elasticityRoot", "forceElasticityRoot");
-                MapFloat(ref stats, serializeData, tip,
+                SetFloatMemberBestEffort(serializeData, tip,
                     "elasticityTip", "TipElasticity", "m_tipElasticity", "m_elasticityTip", "forceElasticityTip");
             }
             else
             {
-                MapFloat(ref stats, serializeData, springScalar,
+                SetFloatMemberBestEffort(serializeData, springScalar,
                     "elasticity", "Elasticity", "m_elasticity", "m_Elasticity",
                     "forceElasticity", "ForceElasticity", "m_forceElasticity");
             }
@@ -267,25 +231,25 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 float root = stiffnessCurve.Evaluate(0f);
                 float tip  = stiffnessCurve.Evaluate(1f);
 
-                MapFloat(ref stats, serializeData, root,
+                SetFloatMemberBestEffort(serializeData, root,
                     "angleRestorationRootStiffness", "m_angleRestorationRootStiffness", "angleRestoreRootStiffness");
-                MapFloat(ref stats, serializeData, tip,
+                SetFloatMemberBestEffort(serializeData, tip,
                     "angleRestorationTipStiffness", "m_angleRestorationTipStiffness", "angleRestoreTipStiffness");
 
                 // Common alternate names
-                MapFloat(ref stats, serializeData, root, "angleRestorationStiffnessRoot", "AngleRestorationStiffnessRoot");
-                MapFloat(ref stats, serializeData, tip,  "angleRestorationStiffnessTip",  "AngleRestorationStiffnessTip");
+                SetFloatMemberBestEffort(serializeData, root, "angleRestorationStiffnessRoot", "AngleRestorationStiffnessRoot");
+                SetFloatMemberBestEffort(serializeData, tip,  "angleRestorationStiffnessTip",  "AngleRestorationStiffnessTip");
             }
             else
             {
                 // Fallback scalar
-                MapFloat(ref stats, serializeData, stiffnessScalar,
+                SetFloatMemberBestEffort(serializeData, stiffnessScalar,
                     "angleRestorationStiffness", "AngleRestorationStiffness", "m_angleRestorationStiffness",
                     "angleRestoreStiffness", "AngleRestoreStiffness");
             }
 
             // ---- Damping ----
-            MapFloat(ref stats, serializeData, damping,
+            SetFloatMemberBestEffort(serializeData, damping,
                 "damping", "Damping", "m_damping", "m_Damping",
                 "drag", "Drag", "m_drag");
 
@@ -293,91 +257,124 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
             // If PhysBone gravity is Vector3, prefer it. Otherwise use scalar with default direction.
             if (gravityVec != Vector3.zero)
             {
-                MapFloat(ref stats, serializeData, gravityVec.magnitude,
+                SetFloatMemberBestEffort(serializeData, gravityVec.magnitude,
                     "gravity", "Gravity", "m_gravity", "m_Gravity");
                 SetVector3MemberBestEffort(serializeData, gravityVec.normalized,
                     "gravityDirection", "GravityDirection", "m_gravityDirection", "m_GravityDirection");
             }
             else
             {
-                MapFloat(ref stats, serializeData, gravity,
+                SetFloatMemberBestEffort(serializeData, gravity,
                     "gravity", "Gravity", "m_gravity", "m_Gravity");
                 // leave direction default unless you want to force (0,-1,0)
             }
 
-            MapFloat(ref stats, serializeData, gravityFalloff,
+            SetFloatMemberBestEffort(serializeData, gravityFalloff,
                 "gravityFalloff", "GravityFalloff", "m_gravityFalloff", "m_GravityFalloff");
+        }
 
-            // ---- Advanced best-effort mappings ----
-            MapFloat(ref stats, serializeData, radius,
-                "radius", "Radius", "m_radius", "m_Radius",
-                "collisionRadius", "CollisionRadius", "m_collisionRadius");
-            MapFloatByKeywords(ref stats, serializeData, radius, "radius");
-            MapFloatByKeywords(ref stats, serializeData, radius, "collision", "radius");
+        private static void MapPhysBoneColliders(Component physBone, object serializeData)
+        {
+            if (physBone == null || serializeData == null) return;
 
-            MapFloat(ref stats, serializeData, immobile,
-                "worldInertia", "WorldInertia", "m_worldInertia", "m_WorldInertia",
-                "inertia", "Inertia", "m_inertia");
-            MapFloatByKeywords(ref stats, serializeData, immobile, "inertia");
-            MapFloatByKeywords(ref stats, serializeData, immobile, "stability");
+            var physColliders = GetListMember(physBone,
+                "colliders", "Colliders", "m_Colliders",
+                "colliderList", "ColliderList", "m_ColliderList");
 
-            MapFloat(ref stats, serializeData, limit,
-                "limit", "Limit", "m_limit", "m_Limit",
-                "distanceLimit", "DistanceLimit", "m_distanceLimit");
-            MapFloat(ref stats, serializeData, angleLimit,
-                "angleLimit", "AngleLimit", "m_angleLimit", "m_AngleLimit",
-                "maxAngle", "MaxAngle", "m_maxAngle");
-            MapFloat(ref stats, serializeData, maxAngle,
-                "maxAngle", "MaxAngle", "m_maxAngle", "m_MaxAngle");
-            // Limit fallback angle keyword mapping to angle-limit style members only,
-            // so we don't accidentally overwrite unrelated angle-restoration stiffness fields.
-            MapFloatByKeywords(ref stats, serializeData, maxAngle, "angle", "limit");
-            MapFloatByKeywords(ref stats, serializeData, limit, "limit");
+            if (physColliders == null || physColliders.Count == 0) return;
 
-            MapEnum(ref stats, serializeData, "Point", "collisionMode", "CollisionMode", "m_collisionMode");
-            MapEnumByKeywords(ref stats, serializeData, "Point", "collision");
+            TrySetListMemberBestEffort(
+                serializeData,
+                physColliders,
+                "colliders", "Colliders", "m_colliders", "m_Colliders",
+                "collisionColliders", "CollisionColliders", "m_collisionColliders", "m_CollisionColliders");
+        }
 
-            if (sourceColliderCount > 0)
+        private static IList GetListMember(object obj, params string[] names)
+        {
+            if (obj == null || names == null) return null;
+
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var t = obj.GetType();
+
+            foreach (var n in names)
             {
-                var copied = SetComponentListMemberBestEffort(serializeData,
-                    new[]
-                    {
-                        "colliders", "Colliders", "m_colliders",
-                        "colliderList", "ColliderList", "m_colliderList",
-                        "collisionColliders", "CollisionColliders", "m_collisionColliders"
-                    },
-                    collidersObj,
-                    out var copiedCount);
+                try
+                {
+                    var f = t.GetField(n, BF);
+                    if (f?.GetValue(obj) is IList flist) return flist;
 
-                if (copied && copiedCount > 0) stats.applied += copiedCount;
-                else stats.skipped += sourceColliderCount;
+                    var p = t.GetProperty(n, BF);
+                    if (p != null && p.CanRead && p.GetValue(obj, null) is IList plist) return plist;
+                }
+                catch { }
             }
 
-            return stats;
+            return null;
         }
 
-        private static void MapFloat(ref MappingStats stats, object obj, float value, params string[] names)
+        private static bool TrySetListMemberBestEffort(object obj, IList values, params string[] names)
         {
-            if (TrySetFloatMemberBestEffort(obj, value, names)) stats.applied++;
-            else stats.skipped++;
+            if (obj == null || values == null || names == null) return false;
+
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var t = obj.GetType();
+
+            foreach (var n in names)
+            {
+                try
+                {
+                    var f = t.GetField(n, BF);
+                    if (f != null && TryPopulateListObject(f.GetValue(obj), values)) return true;
+
+                    var p = t.GetProperty(n, BF);
+                    if (p != null && p.CanRead && TryPopulateListObject(p.GetValue(obj, null), values)) return true;
+                }
+                catch { }
+            }
+
+            return false;
         }
 
-        private static void MapFloatByKeywords(ref MappingStats stats, object obj, float value, params string[] keywords)
+        private static bool TryPopulateListObject(object listObj, IList sourceValues)
         {
-            if (TrySetFloatMemberByKeywords(obj, value, keywords)) stats.applied++;
-            else stats.skipped++;
+            var targetList = listObj as IList;
+            if (targetList == null) return false;
+
+            targetList.Clear();
+
+            var listType = targetList.GetType();
+            var elementType = GetListElementType(listType) ?? typeof(object);
+
+            foreach (var value in sourceValues)
+            {
+                if (value == null)
+                {
+                    targetList.Add(null);
+                    continue;
+                }
+
+                if (elementType.IsAssignableFrom(value.GetType()))
+                    targetList.Add(value);
+            }
+
+            return true;
         }
 
-        private static void MapEnum(ref MappingStats stats, object obj, string displayName, params string[] names)
+        private static Type GetListElementType(Type listType)
         {
-            if (TrySetEnumMemberByDisplayBestEffort(obj, names, displayName)) stats.applied++;
-            else stats.skipped++;
-        }
+            if (listType == null) return null;
 
-        private static void MapEnumByKeywords(ref MappingStats stats, object obj, string displayName, params string[] keywords)
-        {
-            if (TrySetEnumMemberByKeywords(obj, displayName, keywords)) stats.applied++;
-            else stats.skipped++;
+            if (listType.IsArray) return listType.GetElementType();
+            if (listType.IsGenericType) return listType.GetGenericArguments()[0];
+
+            foreach (var iface in listType.GetInterfaces())
+            {
+                if (iface.IsGenericType && iface.GetGenericTypeDefinition() == typeof(System.Collections.Generic.IList<>))
+                    return iface.GetGenericArguments()[0];
+            }
+
+            return null;
         }
 
         // ======================================================
@@ -476,82 +473,6 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
             }
         }
 
-        private static int CountEnumerable(object enumerable)
-        {
-            if (enumerable == null) return 0;
-            if (enumerable is ICollection c) return c.Count;
-            if (enumerable is IEnumerable e)
-            {
-                int count = 0;
-                foreach (var _ in e) count++;
-                return count;
-            }
-            return 0;
-        }
-
-        private static bool SetComponentListMemberBestEffort(object obj, string[] names, object sourceEnumerable, out int copiedCount)
-        {
-            copiedCount = 0;
-            if (obj == null || names == null || sourceEnumerable == null) return false;
-
-            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            var t = obj.GetType();
-
-            foreach (var n in names)
-            {
-                try
-                {
-                    var f = t.GetField(n, BF);
-                    if (f != null && TryCopyAssignableList(f.GetValue(obj), sourceEnumerable, out copiedCount)) return true;
-
-                    var p = t.GetProperty(n, BF);
-                    if (p != null && p.CanRead && TryCopyAssignableList(p.GetValue(obj, null), sourceEnumerable, out copiedCount)) return true;
-                }
-                catch { }
-            }
-
-            return false;
-        }
-
-        private static bool TryCopyAssignableList(object targetListObj, object sourceEnumerable, out int copiedCount)
-        {
-            copiedCount = 0;
-            if (!(targetListObj is IList list) || sourceEnumerable == null) return false;
-
-            var targetType = GetListElementType(targetListObj.GetType()) ?? typeof(object);
-            list.Clear();
-
-            if (sourceEnumerable is IEnumerable enumerable)
-            {
-                foreach (var item in enumerable)
-                {
-                    if (item == null) continue;
-                    if (targetType.IsAssignableFrom(item.GetType()))
-                    {
-                        list.Add(item);
-                        copiedCount++;
-                    }
-                }
-            }
-
-            return copiedCount > 0;
-        }
-
-        private static Type GetListElementType(Type listType)
-        {
-            if (listType == null) return null;
-            if (listType.IsArray) return listType.GetElementType();
-            if (listType.IsGenericType) return listType.GetGenericArguments()[0];
-
-            foreach (var iface in listType.GetInterfaces())
-            {
-                if (iface.IsGenericType && iface.GetGenericTypeDefinition() == typeof(IList<>))
-                    return iface.GetGenericArguments()[0];
-            }
-
-            return null;
-        }
-
         private static bool TrySetListObject(object listObj, Transform[] values)
         {
             if (listObj is IList ilist)
@@ -564,11 +485,8 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
         }
 
         private static void SetEnumMemberByDisplayBestEffort(object obj, string[] names, string displayName)
-            => TrySetEnumMemberByDisplayBestEffort(obj, names, displayName);
-
-        private static bool TrySetEnumMemberByDisplayBestEffort(object obj, string[] names, string displayName)
         {
-            if (obj == null || names == null || string.IsNullOrEmpty(displayName)) return false;
+            if (obj == null || names == null || string.IsNullOrEmpty(displayName)) return;
 
             const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
             var t = obj.GetType();
@@ -581,23 +499,18 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                     if (f != null && f.FieldType.IsEnum)
                     {
                         var val = FindEnumByInspectorNameOrToString(f.FieldType, displayName);
-                        if (val != null) { f.SetValue(obj, val); return true; }
+                        if (val != null) { f.SetValue(obj, val); return; }
                     }
 
                     var p = t.GetProperty(n, BF);
                     if (p != null && p.CanWrite && p.PropertyType.IsEnum)
                     {
                         var val = FindEnumByInspectorNameOrToString(p.PropertyType, displayName);
-                        if (val != null) { p.SetValue(obj, val, null); return true; }
+                        if (val != null) { p.SetValue(obj, val, null); return; }
                     }
                 }
                 catch { }
             }
-
-            if (EnableVerboseMappingLogs)
-                Debug.Log($"PhysBone→Magica2: Enum mapping skipped for '{displayName}' on {obj.GetType().Name}.");
-
-            return false;
         }
 
         private static object FindEnumByInspectorNameOrToString(Type enumType, string displayName)
@@ -632,11 +545,8 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
         }
 
         private static void SetFloatMemberBestEffort(object obj, float value, params string[] names)
-            => TrySetFloatMemberBestEffort(obj, value, names);
-
-        private static bool TrySetFloatMemberBestEffort(object obj, float value, params string[] names)
         {
-            if (obj == null || names == null) return false;
+            if (obj == null || names == null) return;
 
             const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
             var t = obj.GetType();
@@ -646,86 +556,13 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 try
                 {
                     var f = t.GetField(n, BF);
-                    if (f != null && f.FieldType == typeof(float)) { f.SetValue(obj, value); return true; }
+                    if (f != null && f.FieldType == typeof(float)) { f.SetValue(obj, value); return; }
 
                     var p = t.GetProperty(n, BF);
-                    if (p != null && p.CanWrite && p.PropertyType == typeof(float)) { p.SetValue(obj, value, null); return true; }
+                    if (p != null && p.CanWrite && p.PropertyType == typeof(float)) { p.SetValue(obj, value, null); return; }
                 }
                 catch { }
             }
-
-            if (EnableVerboseMappingLogs)
-                Debug.Log($"PhysBone→Magica2: Float mapping skipped on {obj.GetType().Name} [{string.Join(",", names)}].");
-            return false;
-        }
-
-        private static bool TrySetFloatMemberByKeywords(object obj, float value, params string[] keywords)
-        {
-            if (obj == null || keywords == null || keywords.Length == 0) return false;
-
-            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            var t = obj.GetType();
-
-            foreach (var f in t.GetFields(BF))
-            {
-                if (f.FieldType != typeof(float)) continue;
-                if (!ContainsKeywords(f.Name, keywords)) continue;
-                try { f.SetValue(obj, value); return true; } catch { }
-            }
-
-            foreach (var p in t.GetProperties(BF))
-            {
-                if (!p.CanWrite || p.PropertyType != typeof(float)) continue;
-                if (!ContainsKeywords(p.Name, keywords)) continue;
-                try { p.SetValue(obj, value, null); return true; } catch { }
-            }
-
-            return false;
-        }
-
-        private static bool TrySetEnumMemberByKeywords(object obj, string displayName, params string[] keywords)
-        {
-            if (obj == null || string.IsNullOrEmpty(displayName) || keywords == null || keywords.Length == 0) return false;
-
-            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            var t = obj.GetType();
-
-            foreach (var f in t.GetFields(BF))
-            {
-                if (!f.FieldType.IsEnum || !ContainsKeywords(f.Name, keywords)) continue;
-                try
-                {
-                    var val = FindEnumByInspectorNameOrToString(f.FieldType, displayName);
-                    if (val != null) { f.SetValue(obj, val); return true; }
-                }
-                catch { }
-            }
-
-            foreach (var p in t.GetProperties(BF))
-            {
-                if (!p.CanWrite || !p.PropertyType.IsEnum || !ContainsKeywords(p.Name, keywords)) continue;
-                try
-                {
-                    var val = FindEnumByInspectorNameOrToString(p.PropertyType, displayName);
-                    if (val != null) { p.SetValue(obj, val, null); return true; }
-                }
-                catch { }
-            }
-
-            return false;
-        }
-
-        private static bool ContainsKeywords(string source, string[] keywords)
-        {
-            if (string.IsNullOrEmpty(source) || keywords == null || keywords.Length == 0) return false;
-
-            var norm = source.Replace("_", string.Empty).ToLowerInvariant();
-            foreach (var keyword in keywords)
-            {
-                if (string.IsNullOrEmpty(keyword)) continue;
-                if (!norm.Contains(keyword.Replace("_", string.Empty).ToLowerInvariant())) return false;
-            }
-            return true;
         }
 
         private static void SetVector3MemberBestEffort(object obj, Vector3 value, params string[] names)

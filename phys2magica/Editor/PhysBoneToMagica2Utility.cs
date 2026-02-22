@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Reflection;
 using UnityEditor;
 using UnityEngine;
@@ -100,6 +101,9 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
 
                     // Map PhysBone -> Magica Bone Cloth parameters (includes curve weighting)
                     MapPhysBoneToMagicaBoneCloth(physComp, serializeData);
+
+                    // Transfer PhysBone collider references when compatible members exist
+                    MapPhysBoneColliders(physComp, serializeData);
                 }
 
                 result.magicaCreated++;
@@ -267,6 +271,110 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
 
             SetFloatMemberBestEffort(serializeData, gravityFalloff,
                 "gravityFalloff", "GravityFalloff", "m_gravityFalloff", "m_GravityFalloff");
+        }
+
+        private static void MapPhysBoneColliders(Component physBone, object serializeData)
+        {
+            if (physBone == null || serializeData == null) return;
+
+            var physColliders = GetListMember(physBone,
+                "colliders", "Colliders", "m_Colliders",
+                "colliderList", "ColliderList", "m_ColliderList");
+
+            if (physColliders == null || physColliders.Count == 0) return;
+
+            TrySetListMemberBestEffort(
+                serializeData,
+                physColliders,
+                "colliders", "Colliders", "m_colliders", "m_Colliders",
+                "collisionColliders", "CollisionColliders", "m_collisionColliders", "m_CollisionColliders");
+        }
+
+        private static IList GetListMember(object obj, params string[] names)
+        {
+            if (obj == null || names == null) return null;
+
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var t = obj.GetType();
+
+            foreach (var n in names)
+            {
+                try
+                {
+                    var f = t.GetField(n, BF);
+                    if (f?.GetValue(obj) is IList flist) return flist;
+
+                    var p = t.GetProperty(n, BF);
+                    if (p != null && p.CanRead && p.GetValue(obj, null) is IList plist) return plist;
+                }
+                catch { }
+            }
+
+            return null;
+        }
+
+        private static bool TrySetListMemberBestEffort(object obj, IList values, params string[] names)
+        {
+            if (obj == null || values == null || names == null) return false;
+
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var t = obj.GetType();
+
+            foreach (var n in names)
+            {
+                try
+                {
+                    var f = t.GetField(n, BF);
+                    if (f != null && TryPopulateListObject(f.GetValue(obj), values)) return true;
+
+                    var p = t.GetProperty(n, BF);
+                    if (p != null && p.CanRead && TryPopulateListObject(p.GetValue(obj, null), values)) return true;
+                }
+                catch { }
+            }
+
+            return false;
+        }
+
+        private static bool TryPopulateListObject(object listObj, IList sourceValues)
+        {
+            var targetList = listObj as IList;
+            if (targetList == null) return false;
+
+            targetList.Clear();
+
+            var listType = targetList.GetType();
+            var elementType = GetListElementType(listType) ?? typeof(object);
+
+            foreach (var value in sourceValues)
+            {
+                if (value == null)
+                {
+                    targetList.Add(null);
+                    continue;
+                }
+
+                if (elementType.IsAssignableFrom(value.GetType()))
+                    targetList.Add(value);
+            }
+
+            return true;
+        }
+
+        private static Type GetListElementType(Type listType)
+        {
+            if (listType == null) return null;
+
+            if (listType.IsArray) return listType.GetElementType();
+            if (listType.IsGenericType) return listType.GetGenericArguments()[0];
+
+            foreach (var iface in listType.GetInterfaces())
+            {
+                if (iface.IsGenericType && iface.GetGenericTypeDefinition() == typeof(System.Collections.Generic.IList<>))
+                    return iface.GetGenericArguments()[0];
+            }
+
+            return null;
         }
 
         // ======================================================

@@ -351,8 +351,8 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
         {
             if (physCollider == null) return null;
 
-            var shape = GetMember(physCollider, "", "shapeType", "ShapeType", "m_ShapeType");
-            var shapeName = (shape ?? string.Empty).ToString();
+            var shapeObj = GetMember<object>(physCollider, null, "shapeType", "ShapeType", "m_ShapeType");
+            var shapeName = shapeObj != null ? shapeObj.ToString() : string.Empty;
 
             Type targetType = null;
             if (shapeName.IndexOf("capsule", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -370,11 +370,11 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 : Undo.AddComponent(physCollider.gameObject, targetType) as Component;
             if (magicaCollider == null) return null;
 
-            CopyColliderTransformAndCommonSettings(physCollider, magicaCollider);
+            CopyColliderTransformAndCommonSettings(physCollider, magicaCollider, targetType == magicaCapsuleColliderType);
             return magicaCollider;
         }
 
-        private static void CopyColliderTransformAndCommonSettings(Component physCollider, Component magicaCollider)
+        private static void CopyColliderTransformAndCommonSettings(Component physCollider, Component magicaCollider, bool isCapsule)
         {
             if (physCollider == null || magicaCollider == null) return;
 
@@ -383,18 +383,49 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
             Vector3 center = GetVector3Member(physCollider, Vector3.zero, "position", "Position", "m_Position", "center", "Center", "m_Center");
             Quaternion rotation = GetMember(physCollider, Quaternion.identity, "rotation", "Rotation", "m_Rotation");
 
-            SetFloatMemberBestEffort(magicaCollider, radius,
-                "radius", "Radius", "m_radius", "m_Radius",
-                "size", "Size", "m_size", "m_Size");
+            var lossyScale = physCollider.transform != null ? physCollider.transform.lossyScale : Vector3.one;
+            int direction = GetMember(physCollider, 1, "direction", "Direction", "m_Direction");
 
-            if (height > 0f)
+            float absX = Mathf.Abs(lossyScale.x);
+            float absY = Mathf.Abs(lossyScale.y);
+            float absZ = Mathf.Abs(lossyScale.z);
+
+            float axialScale;
+            float radialScale;
+            if (direction == 0)
             {
-                SetFloatMemberBestEffort(magicaCollider, height,
+                axialScale = absX;
+                radialScale = Mathf.Max(absY, absZ);
+            }
+            else if (direction == 2)
+            {
+                axialScale = absZ;
+                radialScale = Mathf.Max(absX, absY);
+            }
+            else
+            {
+                axialScale = absY;
+                radialScale = Mathf.Max(absX, absZ);
+            }
+
+            float scaledRadius = radius * radialScale;
+            float scaledHeight = height * axialScale;
+            Vector3 scaledCenter = Vector3.Scale(center, lossyScale);
+
+            SetFloatMemberBestEffort(magicaCollider, scaledRadius,
+                "radius", "Radius", "m_radius", "m_Radius",
+                "size", "Size", "m_size", "m_Size",
+                "startRadius", "StartRadius", "m_startRadius", "m_StartRadius",
+                "endRadius", "EndRadius", "m_endRadius", "m_EndRadius");
+
+            if (scaledHeight > 0f)
+            {
+                SetFloatMemberBestEffort(magicaCollider, scaledHeight,
                     "height", "Height", "m_height", "m_Height",
                     "length", "Length", "m_length", "m_Length");
             }
 
-            SetVector3MemberBestEffort(magicaCollider, center,
+            SetVector3MemberBestEffort(magicaCollider, scaledCenter,
                 "center", "Center", "m_center", "m_Center",
                 "offset", "Offset", "m_offset", "m_Offset",
                 "position", "Position", "m_position", "m_Position");
@@ -417,7 +448,7 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                     "startTransform", "StartTransform", "m_startTransform", "m_StartTransform");
             }
 
-            if (endTransform != null)
+            if (isCapsule && endTransform != null)
             {
                 SetTransformMemberBestEffort(magicaCollider, endTransform,
                     "endTransform", "EndTransform", "m_endTransform", "m_EndTransform",

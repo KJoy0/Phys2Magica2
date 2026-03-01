@@ -69,6 +69,7 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
             Undo.RegisterFullObjectHierarchyUndo(root, "PhysBone → Magica2");
 
             var convertedColliderMap = new Dictionary<Component, Component>();
+            var createdClothSerializeDataList = new List<object>();
 
             foreach (var pb in physBones)
             {
@@ -96,6 +97,11 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 );
 
                 // Set root list on SerializeData
+                if (serializeData != null)
+                {
+                    createdClothSerializeDataList.Add(serializeData);
+                }
+
                 if (serializeData != null && rootT != null)
                 {
                     SetTransformListMember(
@@ -127,6 +133,29 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 }
 
                 result.magicaCreated++;
+            }
+
+            // Populate every created MagicaCloth with all converted Magica colliders.
+            if (createdClothSerializeDataList.Count > 0 && convertedColliderMap.Count > 0)
+            {
+                var allConvertedColliders = new List<Component>();
+                foreach (var kv in convertedColliderMap)
+                {
+                    var converted = kv.Value;
+                    if (converted != null) allConvertedColliders.Add(converted);
+                }
+
+                if (allConvertedColliders.Count > 0)
+                {
+                    foreach (var clothSerializeData in createdClothSerializeDataList)
+                    {
+                        TrySetListMemberBestEffort(
+                            clothSerializeData,
+                            allConvertedColliders,
+                            "colliders", "Colliders", "m_colliders", "m_Colliders",
+                            "collisionColliders", "CollisionColliders", "m_collisionColliders", "m_CollisionColliders");
+                    }
+                }
             }
 
             if (deletePhysBonesAfter && result.magicaCreated > 0)

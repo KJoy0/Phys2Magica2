@@ -16,13 +16,14 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
             public int magicaCreated;
             public int physBonesDeleted;
             public int physCollidersConverted;
+            public int physCollidersDeleted;
         }
 
         /// <summary>
         /// Standalone converter: VRC PhysBone -> MagicaCloth2 MagicaCloth (forced Bone Cloth).
         /// Uses reflection to avoid hard references to either SDK.
         /// </summary>
-        public static ConvertResult Convert(GameObject root, bool includeInactive, bool deletePhysBonesAfter)
+        public static ConvertResult Convert(GameObject root, bool includeInactive, bool deletePhysBonesAfter, bool deletePhysBoneCollidersAfter)
         {
             var result = new ConvertResult();
             if (root == null) return result;
@@ -71,6 +72,7 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
             var convertedColliderMap = new Dictionary<Component, Component>();
             var createdClothSerializeDataList = new List<object>();
             var createdMagicaClothComponents = new List<Component>();
+            var sourcePhysColliders = new HashSet<Component>();
 
             foreach (var pb in physBones)
             {
@@ -130,7 +132,8 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                         convertedColliderMap,
                         magicaSphereColliderType,
                         magicaCapsuleColliderType,
-                        magicaPlaneColliderType
+                        magicaPlaneColliderType,
+                        sourcePhysColliders
                     );
                 }
 
@@ -158,6 +161,18 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 }
             }
 
+            if (deletePhysBoneCollidersAfter && sourcePhysColliders.Count > 0)
+            {
+                foreach (var physCollider in sourcePhysColliders)
+                {
+                    if (physCollider != null)
+                    {
+                        Undo.DestroyObjectImmediate(physCollider);
+                        result.physCollidersDeleted++;
+                    }
+                }
+            }
+
             if (deletePhysBonesAfter && result.magicaCreated > 0)
             {
                 foreach (var pb in physBones)
@@ -170,7 +185,7 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 }
             }
 
-            Debug.Log($"PhysBone→Magica2: Found {result.physBonesFound}, created {result.magicaCreated}, deleted {result.physBonesDeleted}, colliders converted {result.physCollidersConverted}.");
+            Debug.Log($"PhysBone→Magica2: Found {result.physBonesFound}, created {result.magicaCreated}, deleted {result.physBonesDeleted}, colliders converted {result.physCollidersConverted}, source colliders deleted {result.physCollidersDeleted}.");
             return result;
         }
 
@@ -328,7 +343,8 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
             Dictionary<Component, Component> convertedColliderMap,
             Type magicaSphereColliderType,
             Type magicaCapsuleColliderType,
-            Type magicaPlaneColliderType)
+            Type magicaPlaneColliderType,
+            HashSet<Component> sourcePhysColliders)
         {
             if (physBone == null || serializeData == null) return 0;
 
@@ -344,6 +360,8 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
             foreach (var raw in physColliders)
             {
                 if (!(raw is Component physCollider) || physCollider == null) continue;
+
+                sourcePhysColliders?.Add(physCollider);
 
                 if (!convertedColliderMap.TryGetValue(physCollider, out var magicaCollider) || magicaCollider == null)
                 {

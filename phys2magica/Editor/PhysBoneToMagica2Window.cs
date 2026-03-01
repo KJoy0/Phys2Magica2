@@ -10,6 +10,7 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
         private GameObject targetRoot;
         private bool includeInactive = true;
         private bool deletePhysBonesAfter = false;
+        private bool deletePhysBoneCollidersAfter = false;
 
         [MenuItem("Tools/PhysBone → MagicaCloth2")]
         private static void Open()
@@ -39,6 +40,11 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 deletePhysBonesAfter
             );
 
+            deletePhysBoneCollidersAfter = EditorGUILayout.Toggle(
+                "Delete PhysBone Colliders After",
+                deletePhysBoneCollidersAfter
+            );
+
             EditorGUILayout.Space();
 
             using (new EditorGUI.DisabledScope(targetRoot == null))
@@ -48,13 +54,16 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                     var result = PhysBoneToMagica2Utility.Convert(
                         targetRoot,
                         includeInactive,
-                        deletePhysBonesAfter
+                        deletePhysBonesAfter,
+                        deletePhysBoneCollidersAfter
                     );
 
                     EditorUtility.DisplayDialog(
                         "PhysBone → MagicaCloth2",
                         $"PhysBones Found: {result.physBonesFound}\n" +
                         $"MagicaCloth Created: {result.magicaCreated}\n" +
+                        $"Phys Colliders Converted: {result.physCollidersConverted}\n" +
+                        $"Phys Colliders Deleted: {result.physCollidersDeleted}\n" +
                         $"PhysBones Deleted: {result.physBonesDeleted}",
                         "OK"
                     );

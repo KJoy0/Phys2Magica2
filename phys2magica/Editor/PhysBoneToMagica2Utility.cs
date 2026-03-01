@@ -15,13 +15,15 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
             public int physBonesFound;
             public int magicaCreated;
             public int physBonesDeleted;
+            public int physCollidersConverted;
+            public int physCollidersDeleted;
         }
 
         /// <summary>
         /// Standalone converter: VRC PhysBone -> MagicaCloth2 MagicaCloth (forced Bone Cloth).
         /// Uses reflection to avoid hard references to either SDK.
         /// </summary>
-        public static ConvertResult Convert(GameObject root, bool includeInactive, bool deletePhysBonesAfter)
+        public static ConvertResult Convert(GameObject root, bool includeInactive, bool deletePhysBonesAfter, bool deletePhysBoneCollidersAfter)
         {
             var result = new ConvertResult();
             if (root == null) return result;
@@ -40,6 +42,16 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 FindTypeInDomain("MagicaCloth2.MagicaCloth") ??
                 FindTypeInDomain("MagicaCloth");
 
+            var magicaSphereColliderType =
+                FindTypeInDomain("MagicaCloth2.MagicaSphereCollider") ??
+                FindTypeInDomain("MagicaSphereCollider");
+            var magicaCapsuleColliderType =
+                FindTypeInDomain("MagicaCloth2.MagicaCapsuleCollider") ??
+                FindTypeInDomain("MagicaCapsuleCollider");
+            var magicaPlaneColliderType =
+                FindTypeInDomain("MagicaCloth2.MagicaPlaneCollider") ??
+                FindTypeInDomain("MagicaPlaneCollider");
+
             if (magicaClothType == null)
             {
                 Debug.LogWarning("PhysBone→Magica2: MagicaCloth type not found. Is MagicaCloth2 installed?");
@@ -57,12 +69,18 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
 
             Undo.RegisterFullObjectHierarchyUndo(root, "PhysBone → Magica2");
 
+            var convertedColliderMap = new Dictionary<Component, Component>();
+            var createdClothSerializeDataList = new List<object>();
+            var createdMagicaClothComponents = new List<Component>();
+            var sourcePhysColliders = new HashSet<Component>();
+
             foreach (var pb in physBones)
             {
                 if (!(pb is Component physComp) || physComp == null) continue;
 
                 var newComp = Undo.AddComponent(physComp.gameObject, magicaClothType) as Component;
                 if (newComp == null) continue;
+                createdMagicaClothComponents.Add(newComp);
 
                 // Resolve root: PhysBone rootTransform if present, else component transform
                 var rootT = ResolvePhysBoneRootOrSelf(physComp);
@@ -83,6 +101,11 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 );
 
                 // Set root list on SerializeData
+                if (serializeData != null)
+                {
+                    createdClothSerializeDataList.Add(serializeData);
+                }
+
                 if (serializeData != null && rootT != null)
                 {
                     SetTransformListMember(
@@ -102,11 +125,52 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                     // Map PhysBone -> Magica Bone Cloth parameters (includes curve weighting)
                     MapPhysBoneToMagicaBoneCloth(physComp, serializeData);
 
-                    // Transfer PhysBone collider references when compatible members exist
-                    MapPhysBoneColliders(physComp, serializeData);
+                    // Convert PhysBone colliders and populate Magica cloth collider list
+                    result.physCollidersConverted += MapPhysBoneColliders(
+                        physComp,
+                        serializeData,
+                        convertedColliderMap,
+                        magicaSphereColliderType,
+                        magicaCapsuleColliderType,
+                        magicaPlaneColliderType,
+                        sourcePhysColliders
+                    );
                 }
 
                 result.magicaCreated++;
+            }
+
+            // Populate every created MagicaCloth with all converted Magica colliders.
+            if (createdClothSerializeDataList.Count > 0 && convertedColliderMap.Count > 0)
+            {
+                var allConvertedColliders = new List<Component>();
+                foreach (var kv in convertedColliderMap)
+                {
+                    var converted = kv.Value;
+                    if (converted != null) allConvertedColliders.Add(converted);
+                }
+
+                if (allConvertedColliders.Count > 0)
+                {
+                    for (int i = 0; i < createdClothSerializeDataList.Count; i++)
+                    {
+                        var clothSerializeData = createdClothSerializeDataList[i];
+                        var clothComp = i < createdMagicaClothComponents.Count ? createdMagicaClothComponents[i] : null;
+                        ApplyCollidersToMagicaClothTargets(clothSerializeData, clothComp, allConvertedColliders);
+                    }
+                }
+            }
+
+            if (deletePhysBoneCollidersAfter && sourcePhysColliders.Count > 0)
+            {
+                foreach (var physCollider in sourcePhysColliders)
+                {
+                    if (physCollider != null)
+                    {
+                        Undo.DestroyObjectImmediate(physCollider);
+                        result.physCollidersDeleted++;
+                    }
+                }
             }
 
             if (deletePhysBonesAfter && result.magicaCreated > 0)
@@ -121,7 +185,7 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 }
             }
 
-            Debug.Log($"PhysBone→Magica2: Found {result.physBonesFound}, created {result.magicaCreated}, deleted {result.physBonesDeleted}.");
+            Debug.Log($"PhysBone→Magica2: Found {result.physBonesFound}, created {result.magicaCreated}, deleted {result.physBonesDeleted}, colliders converted {result.physCollidersConverted}, source colliders deleted {result.physCollidersDeleted}.");
             return result;
         }
 
@@ -273,21 +337,274 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 "gravityFalloff", "GravityFalloff", "m_gravityFalloff", "m_GravityFalloff");
         }
 
-        private static void MapPhysBoneColliders(Component physBone, object serializeData)
+        private static int MapPhysBoneColliders(
+            Component physBone,
+            object serializeData,
+            Dictionary<Component, Component> convertedColliderMap,
+            Type magicaSphereColliderType,
+            Type magicaCapsuleColliderType,
+            Type magicaPlaneColliderType,
+            HashSet<Component> sourcePhysColliders)
         {
-            if (physBone == null || serializeData == null) return;
+            if (physBone == null || serializeData == null) return 0;
 
             var physColliders = GetListMember(physBone,
                 "colliders", "Colliders", "m_Colliders",
                 "colliderList", "ColliderList", "m_ColliderList");
 
-            if (physColliders == null || physColliders.Count == 0) return;
+            if (physColliders == null || physColliders.Count == 0) return 0;
 
-            TrySetListMemberBestEffort(
+            var convertedForCloth = new List<Component>();
+            var convertedCount = 0;
+
+            foreach (var raw in physColliders)
+            {
+                if (!(raw is Component physCollider) || physCollider == null) continue;
+
+                sourcePhysColliders?.Add(physCollider);
+
+                if (!convertedColliderMap.TryGetValue(physCollider, out var magicaCollider) || magicaCollider == null)
+                {
+                    magicaCollider = ConvertSinglePhysCollider(
+                        physCollider,
+                        magicaSphereColliderType,
+                        magicaCapsuleColliderType,
+                        magicaPlaneColliderType);
+
+                    convertedColliderMap[physCollider] = magicaCollider;
+                    if (magicaCollider != null) convertedCount++;
+                }
+
+                if (magicaCollider != null)
+                    convertedForCloth.Add(magicaCollider);
+            }
+
+            if (convertedForCloth.Count == 0) return convertedCount;
+
+            ApplyCollidersToMagicaClothTargets(serializeData, null, convertedForCloth);
+
+            return convertedCount;
+        }
+
+        private static Component ConvertSinglePhysCollider(
+            Component physCollider,
+            Type magicaSphereColliderType,
+            Type magicaCapsuleColliderType,
+            Type magicaPlaneColliderType)
+        {
+            if (physCollider == null) return null;
+
+            var shapeObj = GetMember<object>(physCollider, null, "shapeType", "ShapeType", "m_ShapeType");
+            var shapeName = shapeObj != null ? shapeObj.ToString() : string.Empty;
+
+            Type targetType = null;
+            if (shapeName.IndexOf("capsule", StringComparison.OrdinalIgnoreCase) >= 0)
+                targetType = magicaCapsuleColliderType;
+            else if (shapeName.IndexOf("plane", StringComparison.OrdinalIgnoreCase) >= 0)
+                targetType = magicaPlaneColliderType;
+            else
+                targetType = magicaSphereColliderType;
+
+            if (targetType == null) return null;
+
+            var existing = physCollider.GetComponent(targetType);
+            var magicaCollider = existing != null
+                ? existing
+                : Undo.AddComponent(physCollider.gameObject, targetType) as Component;
+            if (magicaCollider == null) return null;
+
+            CopyColliderTransformAndCommonSettings(physCollider, magicaCollider, targetType, magicaSphereColliderType, magicaCapsuleColliderType);
+            return magicaCollider;
+        }
+
+        private static void CopyColliderTransformAndCommonSettings(
+            Component physCollider,
+            Component magicaCollider,
+            Type targetType,
+            Type magicaSphereColliderType,
+            Type magicaCapsuleColliderType)
+        {
+            if (physCollider == null || magicaCollider == null) return;
+
+            float radius = GetFloatMember(physCollider, 0.05f, "radius", "Radius", "m_Radius");
+            float height = GetFloatMember(physCollider, 0f, "height", "Height", "m_Height");
+            Vector3 center = GetVector3Member(physCollider, Vector3.zero, "position", "Position", "m_Position", "center", "Center", "m_Center");
+            Quaternion rotation = GetMember(physCollider, Quaternion.identity, "rotation", "Rotation", "m_Rotation");
+
+            var lossyScale = physCollider.transform != null ? physCollider.transform.lossyScale : Vector3.one;
+            int direction = GetMember(physCollider, 1, "direction", "Direction", "m_Direction");
+
+            float absX = Mathf.Abs(lossyScale.x);
+            float absY = Mathf.Abs(lossyScale.y);
+            float absZ = Mathf.Abs(lossyScale.z);
+
+            float axialScale;
+            float radialScale;
+            if (direction == 0)
+            {
+                axialScale = absX;
+                radialScale = Mathf.Max(absY, absZ);
+            }
+            else if (direction == 2)
+            {
+                axialScale = absZ;
+                radialScale = Mathf.Max(absX, absY);
+            }
+            else
+            {
+                axialScale = absY;
+                radialScale = Mathf.Max(absX, absZ);
+            }
+
+            bool isSphere = magicaSphereColliderType != null && targetType == magicaSphereColliderType;
+            bool isCapsule = magicaCapsuleColliderType != null && targetType == magicaCapsuleColliderType;
+
+            float scaledRadius = radius * radialScale;
+            float scaledLength = height * axialScale;
+            Vector3 scaledCenter = Vector3.Scale(center, lossyScale);
+
+            // Preferred parameter mapping:
+            // PhysBone Radius -> Magica Radius
+            // PhysBone Height -> Magica Length
+            if (isCapsule)
+            {
+                // MagicaCapsuleCollider.SetSize(startRadius, endRadius, length)
+                if (!TryInvokeSetSize(magicaCollider, scaledRadius, scaledRadius, Mathf.Max(scaledLength, 0.001f)))
+                {
+                    SetFloatMemberBestEffort(magicaCollider, scaledRadius,
+                        "startRadius", "StartRadius", "m_startRadius", "m_StartRadius",
+                        "endRadius", "EndRadius", "m_endRadius", "m_EndRadius",
+                        "radius", "Radius", "m_radius", "m_Radius");
+                    SetFloatMemberBestEffort(magicaCollider, scaledLength,
+                        "length", "Length", "m_length", "m_Length",
+                        "height", "Height", "m_height", "m_Height");
+                }
+
+                // Match requested default direction.
+                SetEnumMemberByDisplayBestEffort(magicaCollider,
+                    new[] { "direction", "Direction", "m_direction", "m_Direction", "axis", "Axis", "m_axis", "m_Axis" },
+                    "Y-Axis");
+                SetEnumMemberByDisplayBestEffort(magicaCollider,
+                    new[] { "direction", "Direction", "m_direction", "m_Direction", "axis", "Axis", "m_axis", "m_Axis" },
+                    "Y");
+            }
+            else if (isSphere)
+            {
+                // MagicaSphereCollider.SetSize(radius)
+                if (!TryInvokeSetSize(magicaCollider, scaledRadius))
+                {
+                    SetFloatMemberBestEffort(magicaCollider, scaledRadius,
+                        "radius", "Radius", "m_radius", "m_Radius",
+                        "size", "Size", "m_size", "m_Size");
+                }
+            }
+            else
+            {
+                // Generic fallback for other collider variants.
+                SetFloatMemberBestEffort(magicaCollider, scaledRadius,
+                    "radius", "Radius", "m_radius", "m_Radius",
+                    "startRadius", "StartRadius", "m_startRadius", "m_StartRadius",
+                    "endRadius", "EndRadius", "m_endRadius", "m_EndRadius");
+                SetFloatMemberBestEffort(magicaCollider, scaledLength,
+                    "length", "Length", "m_length", "m_Length",
+                    "height", "Height", "m_height", "m_Height");
+            }
+
+            SetVector3MemberBestEffort(magicaCollider, scaledCenter,
+                "center", "Center", "m_center", "m_Center",
+                "offset", "Offset", "m_offset", "m_Offset",
+                "position", "Position", "m_position", "m_Position");
+
+            SetQuaternionMemberBestEffort(magicaCollider, rotation,
+                "rotation", "Rotation", "m_rotation", "m_Rotation");
+
+            // VRC uses bones to define capsule endpoints; copy endpoints if available.
+            var rootTransform = GetMember(physCollider, (Transform)null,
+                "rootTransform", "RootTransform", "m_RootTransform",
+                "rootBone", "RootBone", "m_RootBone");
+            var endTransform = GetMember(physCollider, (Transform)null,
+                "endTransform", "EndTransform", "m_EndTransform",
+                "tailTransform", "TailTransform", "m_TailTransform");
+
+            if (rootTransform != null)
+            {
+                SetTransformMemberBestEffort(magicaCollider, rootTransform,
+                    "rootTransform", "RootTransform", "m_rootTransform", "m_RootTransform",
+                    "startTransform", "StartTransform", "m_startTransform", "m_StartTransform");
+            }
+
+            if (isCapsule && endTransform != null)
+            {
+                SetTransformMemberBestEffort(magicaCollider, endTransform,
+                    "endTransform", "EndTransform", "m_endTransform", "m_EndTransform",
+                    "tailTransform", "TailTransform", "m_tailTransform", "m_TailTransform");
+            }
+        }
+
+        private static bool ApplyCollidersToMagicaClothTargets(object serializeData, Component magicaClothComp, IList colliders)
+        {
+            if (colliders == null || colliders.Count == 0) return false;
+
+            bool applied = false;
+
+            // Direct members on SerializeData
+            applied |= TrySetListMemberBestEffort(
                 serializeData,
-                physColliders,
+                colliders,
                 "colliders", "Colliders", "m_colliders", "m_Colliders",
-                "collisionColliders", "CollisionColliders", "m_collisionColliders", "m_CollisionColliders");
+                "collisionColliders", "CollisionColliders", "m_collisionColliders", "m_CollisionColliders",
+                "colliderList", "ColliderList", "m_colliderList", "m_ColliderList");
+
+            // Common nested constraint blocks in MagicaCloth2 serialize data.
+            applied |= TrySetListOnNamedMemberBestEffort(
+                serializeData,
+                new[] { "collisionConstraint", "CollisionConstraint", "m_collisionConstraint", "m_CollisionConstraint" },
+                colliders,
+                "colliderList", "ColliderList", "m_colliderList", "m_ColliderList",
+                "colliders", "Colliders", "m_colliders", "m_Colliders");
+
+            applied |= TrySetListOnNamedMemberBestEffort(
+                serializeData,
+                new[] { "selfCollisionConstraint", "SelfCollisionConstraint", "m_selfCollisionConstraint", "m_SelfCollisionConstraint" },
+                colliders,
+                "colliderList", "ColliderList", "m_colliderList", "m_ColliderList",
+                "colliders", "Colliders", "m_colliders", "m_Colliders");
+
+            // Some versions expose list members directly on MagicaCloth component too.
+            if (magicaClothComp != null)
+            {
+                applied |= TrySetListMemberBestEffort(
+                    magicaClothComp,
+                    colliders,
+                    "colliders", "Colliders", "m_colliders", "m_Colliders",
+                    "collisionColliders", "CollisionColliders", "m_collisionColliders", "m_CollisionColliders",
+                    "colliderList", "ColliderList", "m_colliderList", "m_ColliderList");
+            }
+
+            return applied;
+        }
+
+        private static bool TrySetListOnNamedMemberBestEffort(object obj, string[] parentNames, IList values, params string[] listNames)
+        {
+            if (obj == null || parentNames == null || values == null) return false;
+
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var t = obj.GetType();
+
+            foreach (var n in parentNames)
+            {
+                try
+                {
+                    var f = t.GetField(n, BF);
+                    if (f != null && TrySetListMemberBestEffort(f.GetValue(obj), values, listNames)) return true;
+
+                    var p = t.GetProperty(n, BF);
+                    if (p != null && p.CanRead && TrySetListMemberBestEffort(p.GetValue(obj, null), values, listNames)) return true;
+                }
+                catch { }
+            }
+
+            return false;
         }
 
         private static IList GetListMember(object obj, params string[] names)
@@ -581,6 +898,87 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
 
                     var p = t.GetProperty(n, BF);
                     if (p != null && p.CanWrite && p.PropertyType == typeof(Vector3)) { p.SetValue(obj, value, null); return; }
+                }
+                catch { }
+            }
+        }
+
+        private static bool TryInvokeSetSize(object obj, params object[] args)
+        {
+            if (obj == null) return false;
+
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var t = obj.GetType();
+
+            try
+            {
+                var methods = t.GetMethods(BF);
+                foreach (var m in methods)
+                {
+                    if (!string.Equals(m.Name, "SetSize", StringComparison.Ordinal)) continue;
+
+                    var ps = m.GetParameters();
+                    if (ps.Length != args.Length) continue;
+
+                    bool match = true;
+                    for (int i = 0; i < ps.Length; i++)
+                    {
+                        if (args[i] == null || !ps[i].ParameterType.IsAssignableFrom(args[i].GetType()))
+                        {
+                            match = false;
+                            break;
+                        }
+                    }
+
+                    if (!match) continue;
+
+                    m.Invoke(obj, args);
+                    return true;
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+
+        private static void SetQuaternionMemberBestEffort(object obj, Quaternion value, params string[] names)
+        {
+            if (obj == null || names == null) return;
+
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var t = obj.GetType();
+
+            foreach (var n in names)
+            {
+                try
+                {
+                    var f = t.GetField(n, BF);
+                    if (f != null && f.FieldType == typeof(Quaternion)) { f.SetValue(obj, value); return; }
+
+                    var p = t.GetProperty(n, BF);
+                    if (p != null && p.CanWrite && p.PropertyType == typeof(Quaternion)) { p.SetValue(obj, value, null); return; }
+                }
+                catch { }
+            }
+        }
+
+        private static void SetTransformMemberBestEffort(object obj, Transform value, params string[] names)
+        {
+            if (obj == null || names == null || value == null) return;
+
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var t = obj.GetType();
+
+            foreach (var n in names)
+            {
+                try
+                {
+                    var f = t.GetField(n, BF);
+                    if (f != null && f.FieldType == typeof(Transform)) { f.SetValue(obj, value); return; }
+
+                    var p = t.GetProperty(n, BF);
+                    if (p != null && p.CanWrite && p.PropertyType == typeof(Transform)) { p.SetValue(obj, value, null); return; }
                 }
                 catch { }
             }

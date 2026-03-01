@@ -70,6 +70,7 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
 
             var convertedColliderMap = new Dictionary<Component, Component>();
             var createdClothSerializeDataList = new List<object>();
+            var createdMagicaClothComponents = new List<Component>();
 
             foreach (var pb in physBones)
             {
@@ -77,6 +78,7 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
 
                 var newComp = Undo.AddComponent(physComp.gameObject, magicaClothType) as Component;
                 if (newComp == null) continue;
+                createdMagicaClothComponents.Add(newComp);
 
                 // Resolve root: PhysBone rootTransform if present, else component transform
                 var rootT = ResolvePhysBoneRootOrSelf(physComp);
@@ -147,13 +149,11 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
 
                 if (allConvertedColliders.Count > 0)
                 {
-                    foreach (var clothSerializeData in createdClothSerializeDataList)
+                    for (int i = 0; i < createdClothSerializeDataList.Count; i++)
                     {
-                        TrySetListMemberBestEffort(
-                            clothSerializeData,
-                            allConvertedColliders,
-                            "colliders", "Colliders", "m_colliders", "m_Colliders",
-                            "collisionColliders", "CollisionColliders", "m_collisionColliders", "m_CollisionColliders");
+                        var clothSerializeData = createdClothSerializeDataList[i];
+                        var clothComp = i < createdMagicaClothComponents.Count ? createdMagicaClothComponents[i] : null;
+                        ApplyCollidersToMagicaClothTargets(clothSerializeData, clothComp, allConvertedColliders);
                     }
                 }
             }
@@ -363,11 +363,7 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
 
             if (convertedForCloth.Count == 0) return convertedCount;
 
-            TrySetListMemberBestEffort(
-                serializeData,
-                convertedForCloth,
-                "colliders", "Colliders", "m_colliders", "m_Colliders",
-                "collisionColliders", "CollisionColliders", "m_collisionColliders", "m_CollisionColliders");
+            ApplyCollidersToMagicaClothTargets(serializeData, null, convertedForCloth);
 
             return convertedCount;
         }
@@ -525,6 +521,72 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                     "endTransform", "EndTransform", "m_endTransform", "m_EndTransform",
                     "tailTransform", "TailTransform", "m_tailTransform", "m_TailTransform");
             }
+        }
+
+        private static bool ApplyCollidersToMagicaClothTargets(object serializeData, Component magicaClothComp, IList colliders)
+        {
+            if (colliders == null || colliders.Count == 0) return false;
+
+            bool applied = false;
+
+            // Direct members on SerializeData
+            applied |= TrySetListMemberBestEffort(
+                serializeData,
+                colliders,
+                "colliders", "Colliders", "m_colliders", "m_Colliders",
+                "collisionColliders", "CollisionColliders", "m_collisionColliders", "m_CollisionColliders",
+                "colliderList", "ColliderList", "m_colliderList", "m_ColliderList");
+
+            // Common nested constraint blocks in MagicaCloth2 serialize data.
+            applied |= TrySetListOnNamedMemberBestEffort(
+                serializeData,
+                new[] { "collisionConstraint", "CollisionConstraint", "m_collisionConstraint", "m_CollisionConstraint" },
+                colliders,
+                "colliderList", "ColliderList", "m_colliderList", "m_ColliderList",
+                "colliders", "Colliders", "m_colliders", "m_Colliders");
+
+            applied |= TrySetListOnNamedMemberBestEffort(
+                serializeData,
+                new[] { "selfCollisionConstraint", "SelfCollisionConstraint", "m_selfCollisionConstraint", "m_SelfCollisionConstraint" },
+                colliders,
+                "colliderList", "ColliderList", "m_colliderList", "m_ColliderList",
+                "colliders", "Colliders", "m_colliders", "m_Colliders");
+
+            // Some versions expose list members directly on MagicaCloth component too.
+            if (magicaClothComp != null)
+            {
+                applied |= TrySetListMemberBestEffort(
+                    magicaClothComp,
+                    colliders,
+                    "colliders", "Colliders", "m_colliders", "m_Colliders",
+                    "collisionColliders", "CollisionColliders", "m_collisionColliders", "m_CollisionColliders",
+                    "colliderList", "ColliderList", "m_colliderList", "m_ColliderList");
+            }
+
+            return applied;
+        }
+
+        private static bool TrySetListOnNamedMemberBestEffort(object obj, string[] parentNames, IList values, params string[] listNames)
+        {
+            if (obj == null || parentNames == null || values == null) return false;
+
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var t = obj.GetType();
+
+            foreach (var n in parentNames)
+            {
+                try
+                {
+                    var f = t.GetField(n, BF);
+                    if (f != null && TrySetListMemberBestEffort(f.GetValue(obj), values, listNames)) return true;
+
+                    var p = t.GetProperty(n, BF);
+                    if (p != null && p.CanRead && TrySetListMemberBestEffort(p.GetValue(obj, null), values, listNames)) return true;
+                }
+                catch { }
+            }
+
+            return false;
         }
 
         private static IList GetListMember(object obj, params string[] names)

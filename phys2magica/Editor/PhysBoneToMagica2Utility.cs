@@ -418,11 +418,12 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 "startRadius", "StartRadius", "m_startRadius", "m_StartRadius",
                 "endRadius", "EndRadius", "m_endRadius", "m_EndRadius");
 
+            // PhysBone Height -> Magica Length (fallback to Height naming for compatibility).
             if (scaledHeight > 0f)
             {
                 SetFloatMemberBestEffort(magicaCollider, scaledHeight,
-                    "height", "Height", "m_height", "m_Height",
-                    "length", "Length", "m_length", "m_Length");
+                    "length", "Length", "m_length", "m_Length",
+                    "height", "Height", "m_height", "m_Height");
             }
 
             SetVector3MemberBestEffort(magicaCollider, scaledCenter,
@@ -432,6 +433,14 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
 
             SetQuaternionMemberBestEffort(magicaCollider, rotation,
                 "rotation", "Rotation", "m_rotation", "m_Rotation");
+
+            // Magica collider direction should default to Y axis.
+            SetEnumMemberByDisplayBestEffort(magicaCollider,
+                new[] { "direction", "Direction", "m_direction", "m_Direction", "axis", "Axis", "m_axis", "m_Axis" },
+                "Y Axis");
+            SetEnumMemberByDisplayBestEffort(magicaCollider,
+                new[] { "direction", "Direction", "m_direction", "m_Direction", "axis", "Axis", "m_axis", "m_Axis" },
+                "YAxis");
 
             // VRC uses bones to define capsule endpoints; copy endpoints if available.
             var rootTransform = GetMember(physCollider, (Transform)null,

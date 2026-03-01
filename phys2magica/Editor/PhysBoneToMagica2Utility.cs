@@ -370,11 +370,16 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 : Undo.AddComponent(physCollider.gameObject, targetType) as Component;
             if (magicaCollider == null) return null;
 
-            CopyColliderTransformAndCommonSettings(physCollider, magicaCollider, targetType == magicaCapsuleColliderType);
+            CopyColliderTransformAndCommonSettings(physCollider, magicaCollider, targetType, magicaSphereColliderType, magicaCapsuleColliderType);
             return magicaCollider;
         }
 
-        private static void CopyColliderTransformAndCommonSettings(Component physCollider, Component magicaCollider, bool isCapsule)
+        private static void CopyColliderTransformAndCommonSettings(
+            Component physCollider,
+            Component magicaCollider,
+            Type targetType,
+            Type magicaSphereColliderType,
+            Type magicaCapsuleColliderType)
         {
             if (physCollider == null || magicaCollider == null) return;
 
@@ -408,20 +413,56 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 radialScale = Mathf.Max(absX, absZ);
             }
 
+            bool isSphere = magicaSphereColliderType != null && targetType == magicaSphereColliderType;
+            bool isCapsule = magicaCapsuleColliderType != null && targetType == magicaCapsuleColliderType;
+
             float scaledRadius = radius * radialScale;
-            float scaledHeight = height * axialScale;
+            float scaledLength = height * axialScale;
             Vector3 scaledCenter = Vector3.Scale(center, lossyScale);
 
-            SetFloatMemberBestEffort(magicaCollider, scaledRadius,
-                "radius", "Radius", "m_radius", "m_Radius",
-                "size", "Size", "m_size", "m_Size",
-                "startRadius", "StartRadius", "m_startRadius", "m_StartRadius",
-                "endRadius", "EndRadius", "m_endRadius", "m_EndRadius");
-
-            // PhysBone Height -> Magica Length (fallback to Height naming for compatibility).
-            if (scaledHeight > 0f)
+            // Preferred parameter mapping:
+            // PhysBone Radius -> Magica Radius
+            // PhysBone Height -> Magica Length
+            if (isCapsule)
             {
-                SetFloatMemberBestEffort(magicaCollider, scaledHeight,
+                // MagicaCapsuleCollider.SetSize(startRadius, endRadius, length)
+                if (!TryInvokeSetSize(magicaCollider, scaledRadius, scaledRadius, Mathf.Max(scaledLength, 0.001f)))
+                {
+                    SetFloatMemberBestEffort(magicaCollider, scaledRadius,
+                        "startRadius", "StartRadius", "m_startRadius", "m_StartRadius",
+                        "endRadius", "EndRadius", "m_endRadius", "m_EndRadius",
+                        "radius", "Radius", "m_radius", "m_Radius");
+                    SetFloatMemberBestEffort(magicaCollider, scaledLength,
+                        "length", "Length", "m_length", "m_Length",
+                        "height", "Height", "m_height", "m_Height");
+                }
+
+                // Match requested default direction.
+                SetEnumMemberByDisplayBestEffort(magicaCollider,
+                    new[] { "direction", "Direction", "m_direction", "m_Direction", "axis", "Axis", "m_axis", "m_Axis" },
+                    "Y-Axis");
+                SetEnumMemberByDisplayBestEffort(magicaCollider,
+                    new[] { "direction", "Direction", "m_direction", "m_Direction", "axis", "Axis", "m_axis", "m_Axis" },
+                    "Y");
+            }
+            else if (isSphere)
+            {
+                // MagicaSphereCollider.SetSize(radius)
+                if (!TryInvokeSetSize(magicaCollider, scaledRadius))
+                {
+                    SetFloatMemberBestEffort(magicaCollider, scaledRadius,
+                        "radius", "Radius", "m_radius", "m_Radius",
+                        "size", "Size", "m_size", "m_Size");
+                }
+            }
+            else
+            {
+                // Generic fallback for other collider variants.
+                SetFloatMemberBestEffort(magicaCollider, scaledRadius,
+                    "radius", "Radius", "m_radius", "m_Radius",
+                    "startRadius", "StartRadius", "m_startRadius", "m_StartRadius",
+                    "endRadius", "EndRadius", "m_endRadius", "m_EndRadius");
+                SetFloatMemberBestEffort(magicaCollider, scaledLength,
                     "length", "Length", "m_length", "m_Length",
                     "height", "Height", "m_height", "m_Height");
             }
@@ -433,14 +474,6 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
 
             SetQuaternionMemberBestEffort(magicaCollider, rotation,
                 "rotation", "Rotation", "m_rotation", "m_Rotation");
-
-            // Magica collider direction should default to Y axis.
-            SetEnumMemberByDisplayBestEffort(magicaCollider,
-                new[] { "direction", "Direction", "m_direction", "m_Direction", "axis", "Axis", "m_axis", "m_Axis" },
-                "Y Axis");
-            SetEnumMemberByDisplayBestEffort(magicaCollider,
-                new[] { "direction", "Direction", "m_direction", "m_Direction", "axis", "Axis", "m_axis", "m_Axis" },
-                "YAxis");
 
             // VRC uses bones to define capsule endpoints; copy endpoints if available.
             var rootTransform = GetMember(physCollider, (Transform)null,
@@ -760,6 +793,45 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 catch { }
             }
         }
+
+        private static bool TryInvokeSetSize(object obj, params object[] args)
+        {
+            if (obj == null) return false;
+
+            const BindingFlags BF = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var t = obj.GetType();
+
+            try
+            {
+                var methods = t.GetMethods(BF);
+                foreach (var m in methods)
+                {
+                    if (!string.Equals(m.Name, "SetSize", StringComparison.Ordinal)) continue;
+
+                    var ps = m.GetParameters();
+                    if (ps.Length != args.Length) continue;
+
+                    bool match = true;
+                    for (int i = 0; i < ps.Length; i++)
+                    {
+                        if (args[i] == null || !ps[i].ParameterType.IsAssignableFrom(args[i].GetType()))
+                        {
+                            match = false;
+                            break;
+                        }
+                    }
+
+                    if (!match) continue;
+
+                    m.Invoke(obj, args);
+                    return true;
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
 
         private static void SetQuaternionMemberBestEffort(object obj, Quaternion value, params string[] names)
         {

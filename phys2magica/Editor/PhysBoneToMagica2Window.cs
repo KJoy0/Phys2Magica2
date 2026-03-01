@@ -55,6 +55,7 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                         "PhysBone → MagicaCloth2",
                         $"PhysBones Found: {result.physBonesFound}\n" +
                         $"MagicaCloth Created: {result.magicaCreated}\n" +
+                        $"Phys Colliders Converted: {result.physCollidersConverted}\n" +
                         $"PhysBones Deleted: {result.physBonesDeleted}",
                         "OK"
                     );

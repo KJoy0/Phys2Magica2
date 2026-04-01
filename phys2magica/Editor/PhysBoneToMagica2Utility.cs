@@ -30,11 +30,13 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
 
             var physBoneType =
                 FindTypeInDomain("VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone") ??
-                FindTypeInDomain("VRCPhysBone");
+                FindTypeInDomain("VRCPhysBone") ??
+                FindTypeInBundledDlls("VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone") ??
+                FindTypeInBundledDlls("VRCPhysBone");
 
             if (physBoneType == null)
             {
-                Debug.LogWarning("PhysBone→Magica2: VRCPhysBone type not found.");
+                Debug.LogWarning("PhysBone→Magica2: VRCPhysBone type not found. Install VRC SDK or ensure VRCSDK DLLs are present in the project.");
                 return result;
             }
 
@@ -711,6 +713,43 @@ namespace FloppyDogTools.Tools.PhysBoneToMagica2
                 catch { }
             }
             return null;
+        }
+
+        private static Type FindTypeInBundledDlls(string typeName)
+        {
+            // Fallback: when the full VRC SDK is not installed, explicitly load the bundled
+            // VRCSDK DLLs from Assets so the AppDomain has the types available.
+            try
+            {
+                var guids = AssetDatabase.FindAssets("t:DefaultAsset", new[] { "Assets" });
+                var dllPaths = new List<string>();
+                foreach (var guid in guids)
+                {
+                    var assetPath = AssetDatabase.GUIDToAssetPath(guid);
+                    if (assetPath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+                        && assetPath.IndexOf("VRCSDK", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        var fullPath = System.IO.Path.GetFullPath(assetPath);
+                        dllPaths.Add(fullPath);
+                    }
+                }
+
+                // Sort so base/core DLLs load before PhysBone to satisfy dependencies
+                dllPaths.Sort((a, b) =>
+                {
+                    int Score(string p) =>
+                        p.IndexOf("PhysBone", StringComparison.OrdinalIgnoreCase) >= 0 ? 1 : 0;
+                    return Score(a).CompareTo(Score(b));
+                });
+
+                foreach (var path in dllPaths)
+                {
+                    try { Assembly.LoadFrom(path); } catch { }
+                }
+
+                return FindTypeInDomain(typeName);
+            }
+            catch { return null; }
         }
 
         private static object TryGetSerializeData(Type magicaClothType, Component magicaClothComp)
